@@ -263,7 +263,6 @@ type, public :: barotropic_CS ; private
                              !! velocities, using rates set by lin_drag_um2, _uk1, _vm2, & _vk1
                              !! divided by the depth of the ocean.
                              !! At least one streaming bandpass filter must be enabled.
-                             !! This will set linear_wave_drag = .false.
   logical :: linearized_BT_PV  !< If true, the PV and interface thicknesses used
                              !! in the barotropic Coriolis calculation is time
                              !! invariant and linearized.
@@ -627,9 +626,9 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
                   ! spacing [H L ~> m2 or kg m-1].
   real, dimension(:,:), pointer :: um2, uk1, vm2, vk1
                   ! M2 and K1 velocities from the output of streaming filters [m s-1]
-  real, dimension(SZIBW_(CS),SZJW_(CS)) :: unow
+  real, dimension(SZIBW_(CS),SZJW_(CS)) :: Drag_u
                   ! The zonal acceleration due to frequency-dependent drag [m s-2]
-  real, dimension(SZIW_(CS),SZJBW_(CS)) :: vnow
+  real, dimension(SZIW_(CS),SZJBW_(CS)) :: Drag_v
                   ! The meridional acceleration due to frequency-dependent drag [m s-2]
   real, target, dimension(SZIW_(CS),SZJW_(CS)) :: &
     eta, &        ! The barotropic free surface height anomaly or column mass
@@ -1630,36 +1629,31 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   endif
 
   ! Apply frequency-dependent linear wave drag
+  Drag_u(:,:) = 0.0 ; Drag_v(:,:) = 0.0
+
   if (CS%linear_freq_drag) then
-    unow(:,:) = 0.0 ; vnow(:,:) = 0.0
     !$OMP do
     do j=js,je ; do I=is-1,ie
-      if (CS%lin_drag_u(I,j) > 0.0 .or. CS%lin_drag_um2(I,j) > 0.0 &
-                                   .or. CS%lin_drag_uk1(I,j) > 0.0) then
+      if (CS%lin_drag_um2(I,j) > 0.0 .or. CS%lin_drag_uk1(I,j) > 0.0) then
         Htot = 0.5 * (eta(i,j) + eta(i+1,j))
         if (GV%Boussinesq) &
           Htot = Htot + 0.5*GV%Z_to_H * (CS%bathyT(i,j) + CS%bathyT(i+1,j))
-        if (CS%lin_drag_u(I,j) > 0.0) &
-          unow(I,j) = unow(I,j) + ubt(I,j) * CS%lin_drag_u(I,j) / Htot
         if (CS%lin_drag_um2(I,j) > 0.0) &
-          unow(I,j) = unow(I,j) + um2(I,j) * CS%lin_drag_um2(I,j) / Htot
+          Drag_u(I,j) = Drag_u(I,j) + um2(I,j) * CS%lin_drag_um2(I,j) / Htot
         if (CS%lin_drag_uk1(I,j) > 0.0) &
-          unow(I,j) = unow(I,j) + uk1(I,j) * CS%lin_drag_uk1(I,j) / Htot
+          Drag_u(I,j) = Drag_u(I,j) + uk1(I,j) * CS%lin_drag_uk1(I,j) / Htot
       endif
     enddo ; enddo
     !$OMP do
     do J=js-1,je ; do i=is,ie
-      if (CS%lin_drag_v(i,J) > 0.0 .or. CS%lin_drag_vm2(i,J) > 0.0 &
-                                   .or. CS%lin_drag_vk1(i,J) > 0.0) then
+      if (CS%lin_drag_vm2(i,J) > 0.0 .or. CS%lin_drag_vk1(i,J) > 0.0) then
         Htot = 0.5 * (eta(i,j) + eta(i,j+1))
         if (GV%Boussinesq) &
           Htot = Htot + 0.5*GV%Z_to_H * (CS%bathyT(i,j) + CS%bathyT(i,j+1))
-        if (CS%lin_drag_v(i,J) > 0.0) &
-          vnow(i,J) = vnow(i,J) + vbt(i,J) * CS%lin_drag_v(i,J) / Htot
         if (CS%lin_drag_vm2(i,J) > 0.0) &
-          vnow(i,J) = vnow(i,J) + vm2(i,J) * CS%lin_drag_vm2(i,J) / Htot
+          Drag_v(i,J) = Drag_v(i,J) + vm2(i,J) * CS%lin_drag_vm2(i,J) / Htot
         if (CS%lin_drag_vk1(i,J) > 0.0) &
-          vnow(i,J) = vnow(i,J) + vk1(i,J) * CS%lin_drag_vk1(i,J) / Htot
+          Drag_v(i,J) = Drag_v(i,J) + vk1(i,J) * CS%lin_drag_vk1(i,J) / Htot
       endif
     enddo ; enddo
   endif
@@ -2105,42 +2099,25 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
         !$OMP end do nowait
       endif
 
-      if (CS%linear_freq_drag) then
-        !$OMP do schedule(static)
-        do J=jsv-1,jev ; do i=isv-1,iev+1
-          vel_prev = vbt(i,J)
-          vbt(i,J) = bt_rem_v(i,J) * (vbt(i,J) + &
-               dtbt * ((BT_force_v(i,J) + Cor_v(i,J)) + PFv(i,J) - vnow(i,J)))
-          if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
-          vbt_trans(i,J) = trans_wt1*vbt(i,J) + trans_wt2*vel_prev
-        enddo ; enddo
-      else
-        !$OMP do schedule(static)
-        do J=jsv-1,jev ; do i=isv-1,iev+1
-          vel_prev = vbt(i,J)
-          vbt(i,J) = bt_rem_v(i,J) * (vbt(i,J) + &
-               dtbt * ((BT_force_v(i,J) + Cor_v(i,J)) + PFv(i,J)))
-          if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
-          vbt_trans(i,J) = trans_wt1*vbt(i,J) + trans_wt2*vel_prev
-        enddo ; enddo
-      endif
+      !$OMP do schedule(static)
+      do J=jsv-1,jev ; do i=isv-1,iev+1
+        vel_prev = vbt(i,J)
+        vbt(i,J) = bt_rem_v(i,J) * (vbt(i,J) + &
+             dtbt * ((BT_force_v(i,J) + Cor_v(i,J)) + PFv(i,J) - Drag_v(i,J)))
+        if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
+        vbt_trans(i,J) = trans_wt1*vbt(i,J) + trans_wt2*vel_prev
+      enddo ; enddo
 
       if (CS%linear_wave_drag) then
         !$OMP do schedule(static)
         do J=jsv-1,jev ; do i=isv-1,iev+1
           v_accel_bt(i,J) = v_accel_bt(i,J) + wt_accel(n) * &
-              ((Cor_v(i,J) + PFv(i,J)) - vbt(i,J)*Rayleigh_v(i,J))
-        enddo ; enddo
-      elseif (CS%linear_freq_drag) then
-        !$OMP do schedule(static)
-        do J=jsv-1,jev ; do i=isv-1,iev+1
-          v_accel_bt(i,J) = v_accel_bt(i,J) + wt_accel(n) * &
-              ((Cor_v(i,J) + PFv(i,J)) - vnow(i,J))
+              ((Cor_v(i,J) + PFv(i,J)) - vbt(i,J)*Rayleigh_v(i,J) - Drag_v(i,J))
         enddo ; enddo
       else
         !$OMP do schedule(static)
         do J=jsv-1,jev ; do i=isv-1,iev+1
-          v_accel_bt(i,J) = v_accel_bt(i,J) + wt_accel(n) * (Cor_v(i,J) + PFv(i,J))
+          v_accel_bt(i,J) = v_accel_bt(i,J) + wt_accel(n) * (Cor_v(i,J) + PFv(i,J) - Drag_v(i,J))
         enddo ; enddo
       endif
 
@@ -2199,46 +2176,27 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
         !$OMP end do nowait
       endif
 
-      if (CS%linear_freq_drag) then
-        !$OMP do schedule(static)
-        do j=jsv,jev ; do I=isv-1,iev
-          vel_prev = ubt(I,j)
-          ubt(I,j) = bt_rem_u(I,j) * (ubt(I,j) + &
-               dtbt * ((BT_force_u(I,j) + Cor_u(I,j)) + PFu(I,j) - unow(I,j)))
-          if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
-          ubt_trans(I,j) = trans_wt1*ubt(I,j) + trans_wt2*vel_prev
-        enddo ; enddo
-        !$OMP end do nowait
-      else
-        !$OMP do schedule(static)
-        do j=jsv,jev ; do I=isv-1,iev
-          vel_prev = ubt(I,j)
-          ubt(I,j) = bt_rem_u(I,j) * (ubt(I,j) + &
-               dtbt * ((BT_force_u(I,j) + Cor_u(I,j)) + PFu(I,j)))
-          if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
-          ubt_trans(I,j) = trans_wt1*ubt(I,j) + trans_wt2*vel_prev
-        enddo ; enddo
-        !$OMP end do nowait
-      endif
+      !$OMP do schedule(static)
+      do j=jsv,jev ; do I=isv-1,iev
+        vel_prev = ubt(I,j)
+        ubt(I,j) = bt_rem_u(I,j) * (ubt(I,j) + &
+             dtbt * ((BT_force_u(I,j) + Cor_u(I,j)) + PFu(I,j) - Drag_u(I,j)))
+        if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
+        ubt_trans(I,j) = trans_wt1*ubt(I,j) + trans_wt2*vel_prev
+      enddo ; enddo
+      !$OMP end do nowait
 
       if (CS%linear_wave_drag) then
         !$OMP do schedule(static)
         do j=jsv,jev ; do I=isv-1,iev
           u_accel_bt(I,j) = u_accel_bt(I,j) + wt_accel(n) * &
-             ((Cor_u(I,j) + PFu(I,j)) - ubt(I,j)*Rayleigh_u(I,j))
-        enddo ; enddo
-        !$OMP end do nowait
-      elseif (CS%linear_freq_drag) then
-        !$OMP do schedule(static)
-        do j=jsv,jev ; do I=isv-1,iev
-          u_accel_bt(I,j) = u_accel_bt(I,j) + wt_accel(n) * &
-             ((Cor_u(I,j) + PFu(I,j)) - unow(I,j))
+             ((Cor_u(I,j) + PFu(I,j)) - ubt(I,j)*Rayleigh_u(I,j) - Drag_u(I,j))
         enddo ; enddo
         !$OMP end do nowait
       else
         !$OMP do schedule(static)
         do j=jsv,jev ; do I=isv-1,iev
-          u_accel_bt(I,j) = u_accel_bt(I,j) + wt_accel(n) * (Cor_u(I,j) + PFu(I,j))
+          u_accel_bt(I,j) = u_accel_bt(I,j) + wt_accel(n) * (Cor_u(I,j) + PFu(I,j) - Drag_u(I,j))
         enddo ; enddo
         !$OMP end do nowait
       endif
@@ -2296,42 +2254,25 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
         endif ; enddo ; enddo
       endif
 
-      if (CS%linear_freq_drag) then
-        !$OMP do schedule(static)
-        do j=jsv-1,jev+1 ; do I=isv-1,iev
-          vel_prev = ubt(I,j)
-          ubt(I,j) = bt_rem_u(I,j) * (ubt(I,j) + &
-               dtbt * ((BT_force_u(I,j) + Cor_u(I,j)) + PFu(I,j) - unow(I,j)))
-          if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
-          ubt_trans(I,j) = trans_wt1*ubt(I,j) + trans_wt2*vel_prev
-        enddo ; enddo
-      else
-        !$OMP do schedule(static)
-        do j=jsv-1,jev+1 ; do I=isv-1,iev
-          vel_prev = ubt(I,j)
-          ubt(I,j) = bt_rem_u(I,j) * (ubt(I,j) + &
-               dtbt * ((BT_force_u(I,j) + Cor_u(I,j)) + PFu(I,j)))
-          if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
-          ubt_trans(I,j) = trans_wt1*ubt(I,j) + trans_wt2*vel_prev
-        enddo ; enddo
-      endif
+      !$OMP do schedule(static)
+      do j=jsv-1,jev+1 ; do I=isv-1,iev
+        vel_prev = ubt(I,j)
+        ubt(I,j) = bt_rem_u(I,j) * (ubt(I,j) + &
+             dtbt * ((BT_force_u(I,j) + Cor_u(I,j)) + PFu(I,j) - Drag_u(I,j)))
+        if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
+        ubt_trans(I,j) = trans_wt1*ubt(I,j) + trans_wt2*vel_prev
+      enddo ; enddo
 
       if (CS%linear_wave_drag) then
         !$OMP do schedule(static)
         do j=jsv-1,jev+1 ; do I=isv-1,iev
           u_accel_bt(I,j) = u_accel_bt(I,j) + wt_accel(n) * &
-              ((Cor_u(I,j) + PFu(I,j)) - ubt(I,j)*Rayleigh_u(I,j))
-        enddo ; enddo
-      elseif (CS%linear_freq_drag) then
-        !$OMP do schedule(static)
-        do j=jsv-1,jev+1 ; do I=isv-1,iev
-          u_accel_bt(I,j) = u_accel_bt(I,j) + wt_accel(n) * &
-             ((Cor_u(I,j) + PFu(I,j)) - unow(I,j))
+              ((Cor_u(I,j) + PFu(I,j)) - ubt(I,j)*Rayleigh_u(I,j) - Drag_u(I,j))
         enddo ; enddo
       else
         !$OMP do schedule(static)
         do j=jsv-1,jev+1 ; do I=isv-1,iev
-          u_accel_bt(I,j) = u_accel_bt(I,j) + wt_accel(n) * (Cor_u(I,j) + PFu(I,j))
+          u_accel_bt(I,j) = u_accel_bt(I,j) + wt_accel(n) * (Cor_u(I,j) + PFu(I,j) - Drag_u(I,j))
         enddo ; enddo
       endif
 
@@ -2401,46 +2342,27 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
         endif ; enddo ; enddo
       endif
 
-      if (CS%linear_freq_drag) then
-        !$OMP do schedule(static)
-        do J=jsv-1,jev ; do i=isv,iev
-          vel_prev = vbt(i,J)
-          vbt(i,J) = bt_rem_v(i,J) * (vbt(i,J) + &
-               dtbt * ((BT_force_v(i,J) + Cor_v(i,J)) + PFv(i,J) - vnow(i,J)))
-          if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
-          vbt_trans(i,J) = trans_wt1*vbt(i,J) + trans_wt2*vel_prev
-        enddo ; enddo
-        !$OMP end do nowait
-      else
-        !$OMP do schedule(static)
-        do J=jsv-1,jev ; do i=isv,iev
-          vel_prev = vbt(i,J)
-          vbt(i,J) = bt_rem_v(i,J) * (vbt(i,J) + &
-               dtbt * ((BT_force_v(i,J) + Cor_v(i,J)) + PFv(i,J)))
-          if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
-          vbt_trans(i,J) = trans_wt1*vbt(i,J) + trans_wt2*vel_prev
-        enddo ; enddo
-        !$OMP end do nowait
-      endif
+      !$OMP do schedule(static)
+      do J=jsv-1,jev ; do i=isv,iev
+        vel_prev = vbt(i,J)
+        vbt(i,J) = bt_rem_v(i,J) * (vbt(i,J) + &
+             dtbt * ((BT_force_v(i,J) + Cor_v(i,J)) + PFv(i,J) - Drag_v(i,J)))
+        if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
+        vbt_trans(i,J) = trans_wt1*vbt(i,J) + trans_wt2*vel_prev
+      enddo ; enddo
+      !$OMP end do nowait
 
       if (CS%linear_wave_drag) then
         !$OMP do schedule(static)
         do J=jsv-1,jev ; do i=isv,iev
           v_accel_bt(i,J) = v_accel_bt(i,J) + wt_accel(n) * &
-             ((Cor_v(i,J) + PFv(i,J)) - vbt(i,J)*Rayleigh_v(i,J))
-        enddo ; enddo
-        !$OMP end do nowait
-      elseif (CS%linear_freq_drag) then
-        !$OMP do schedule(static)
-        do J=jsv-1,jev ; do i=isv,iev
-          v_accel_bt(i,J) = v_accel_bt(i,J) + wt_accel(n) * &
-              ((Cor_v(i,J) + PFv(i,J)) - vnow(i,J))
+             ((Cor_v(i,J) + PFv(i,J)) - vbt(i,J)*Rayleigh_v(i,J) - Drag_v(i,J))
         enddo ; enddo
         !$OMP end do nowait
       else
         !$OMP do schedule(static)
         do J=jsv-1,jev ; do i=isv,iev
-          v_accel_bt(i,J) = v_accel_bt(i,J) + wt_accel(n) * (Cor_v(i,J) + PFv(i,J))
+          v_accel_bt(i,J) = v_accel_bt(i,J) + wt_accel(n) * (Cor_v(i,J) + PFv(i,J) - Drag_v(i,J))
         enddo ; enddo
         !$OMP end do nowait
       endif
@@ -4870,11 +4792,9 @@ subroutine barotropic_init(u, v, h, eta, Time, G, GV, US, param_file, diag, CS, 
                  "If true, apply a linear frequency-dependent drag to the barotropic "//&
                  "velocities, using rates set by freq_drag_u & _v divided by the depth of "//&
                  "the ocean.  This was introduced to facilitate tide modeling. "//&
-                 "At least one streaming band-pass filter must be turned on. "//&
-                 "This will set BT_LINEAR_WAVE_DRAG = FALSE.", &
+                 "At least one streaming band-pass filter must be turned on.", &
                  default=.false.)
   if (.not.CS%use_filter_m2 .and. .not.CS%use_filter_k1) CS%linear_freq_drag = .false.
-  if (CS%linear_freq_drag) CS%linear_wave_drag = .false.
 
   call get_param(param_file, mdl, "BT_WAVE_DRAG_FILE", wave_drag_file, &
                  "The name of the file with the barotropic linear wave drag "//&
@@ -4884,20 +4804,19 @@ subroutine barotropic_init(u, v, h, eta, Time, G, GV, US, param_file, diag, CS, 
                  "The name of the variable in BT_WAVE_DRAG_FILE with the "//&
                  "barotropic linear wave drag piston velocities at h points. "//&
                  "It will not be used if both BT_WAVE_DRAG_U and BT_WAVE_DRAG_V are defined.", &
-                 default="rH", &
-                 do_not_log=.not.CS%linear_wave_drag.and..not.CS%linear_freq_drag)
+                 default="rH", do_not_log=.not.CS%linear_wave_drag)
   call get_param(param_file, mdl, "BT_WAVE_DRAG_U", wave_drag_u, &
                  "The name of the variable in BT_WAVE_DRAG_FILE with the "//&
-                 "barotropic linear wave drag piston velocities at u points.", default="", &
-                 do_not_log=.not.CS%linear_wave_drag.and..not.CS%linear_freq_drag)
+                 "barotropic linear wave drag piston velocities at u points.", &
+                 default="", do_not_log=.not.CS%linear_wave_drag)
   call get_param(param_file, mdl, "BT_WAVE_DRAG_V", wave_drag_v, &
                  "The name of the variable in BT_WAVE_DRAG_FILE with the "//&
-                 "barotropic linear wave drag piston velocities at v points.", default="", &
-                 do_not_log=.not.CS%linear_wave_drag.and..not.CS%linear_freq_drag)
+                 "barotropic linear wave drag piston velocities at v points.", &
+                 default="", do_not_log=.not.CS%linear_wave_drag)
   call get_param(param_file, mdl, "BT_WAVE_DRAG_SCALE", wave_drag_scale, &
                  "A scaling factor for the barotropic linear wave drag "//&
                  "piston velocities.", default=1.0, units="nondim", &
-                 do_not_log=.not.CS%linear_wave_drag.and..not.CS%linear_freq_drag)
+                 do_not_log=.not.CS%linear_wave_drag)
 
   call get_param(param_file, mdl, "BT_M2_DRAG_VAR", m2_drag_var, &
                  "The name of the variable in BT_WAVE_DRAG_FILE with the "//&
@@ -5138,7 +5057,7 @@ subroutine barotropic_init(u, v, h, eta, Time, G, GV, US, param_file, diag, CS, 
     call do_group_pass(pass_q_D_Cor, CS%BT_Domain)
   endif
 
-  if (CS%linear_wave_drag .or. CS%linear_freq_drag) then
+  if (CS%linear_wave_drag) then
     ALLOC_(CS%lin_drag_u(IsdB:IedB,jsd:jed)) ; CS%lin_drag_u(:,:) = 0.0
     ALLOC_(CS%lin_drag_v(isd:ied,JsdB:JedB)) ; CS%lin_drag_v(:,:) = 0.0
 
@@ -5181,6 +5100,12 @@ subroutine barotropic_init(u, v, h, eta, Time, G, GV, US, param_file, diag, CS, 
     ALLOC_(CS%lin_drag_vk1(isd:ied,JsdB:JedB)) ; CS%lin_drag_vk1(:,:) = 0.0
 
     if (len_trim(wave_drag_file) > 0) then
+      if (.not. CS%linear_wave_drag) then
+        inputdir = "." ;  call get_param(param_file, mdl, "INPUTDIR", inputdir)
+        wave_drag_file = trim(slasher(inputdir))//trim(wave_drag_file)
+        call log_param(param_file, mdl, "INPUTDIR/BT_WAVE_DRAG_FILE", wave_drag_file)
+      endif
+
       if (CS%use_filter_m2 .and. m2_drag_scale > 0.0) then
         if (len_trim(m2_drag_u) > 0 .and. len_trim(m2_drag_v) > 0) then
           call MOM_read_data(wave_drag_file, m2_drag_u, CS%lin_drag_um2, G%Domain, &
