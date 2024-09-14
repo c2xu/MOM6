@@ -67,11 +67,10 @@ subroutine HA_init(Time, US, param_file, time_ref, nc, freq, phase0, const_name,
   type(time_type),       intent(in)  :: time_ref    !< Reference time (t = 0) used to calculate tidal forcing
   type(unit_scale_type), intent(in)  :: US          !< A dimensional unit scaling type
   type(param_file_type), intent(in)  :: param_file  !< A structure to parse for run-time parameters
-  real, dimension(MAX_CONSTITUENTS), intent(in) :: &
-                                        freq, &     !< The frequency of a tidal constituent [T-1 ~> s-1]
-                                        phase0, &   !< The phase of a tidal constituent at time 0 [rad]
-                                        tide_fn, &  !< Amplitude modulation of tides by nodal cycle [nondim].
-                                        tide_un     !< Phase modulation of tides by nodal cycle [rad].
+  real, dimension(MAX_CONSTITUENTS), intent(in) :: freq    !< The frequency of a tidal constituent [T-1 ~> s-1]
+  real, dimension(MAX_CONSTITUENTS), intent(in) :: phase0  !< The phase of a tidal constituent at time 0 [rad]
+  real, dimension(MAX_CONSTITUENTS), intent(in) :: tide_fn !< Amplitude modulation of tides by nodal cycle [nondim].
+  real, dimension(MAX_CONSTITUENTS), intent(in) :: tide_un !< Phase modulation of tides by nodal cycle [rad].
   integer,               intent(in)  :: nc          !< The number of tidal constituents in use
   character(len=16),     intent(in)  :: const_name(MAX_CONSTITUENTS) !< The name of each constituent
   type(harmonic_analysis_CS), intent(out) :: CS     !< Control structure of the MOM_harmonic_analysis module
