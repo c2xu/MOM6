@@ -313,10 +313,14 @@ type, public :: barotropic_CS ; private
   type(hor_index_type), pointer :: debug_BT_HI => NULL() !< debugging copy of horizontal index_type
   type(SAL_CS), pointer :: SAL_CSp => NULL() !< Control structure for SAL
   type(harmonic_analysis_CS), pointer :: HA_CSp => NULL() !< Control structure for harmonic analysis
-  type(Filter_CS) :: Filt_CS_um2, & !< Control structures for the M2 streaming filter
-                     Filt_CS_vm2, & !< Control structures for the M2 streaming filter
-                     Filt_CS_uk1, & !< Control structures for the K1 streaming filter
-                     Filt_CS_vk1    !< Control structures for the K1 streaming filter
+  type(Filter_CS) :: Filt_CS_um2p, & !< Control structures for the M2 streaming filter
+                     Filt_CS_vm2p, & !< Control structures for the M2 streaming filter
+                     Filt_CS_um2c, & !< Control structures for the M2 streaming filter
+                     Filt_CS_vm2c, & !< Control structures for the M2 streaming filter
+                     Filt_CS_uk1p, & !< Control structures for the K1 streaming filter
+                     Filt_CS_vk1p, & !< Control structures for the K1 streaming filter
+                     Filt_CS_uk1c, & !< Control structures for the K1 streaming filter
+                     Filt_CS_vk1c    !< Control structures for the K1 streaming filter
   logical :: module_is_initialized = .false.  !< If true, module has been initialized
 
   integer :: isdw !< The lower i-memory limit for the wide halo arrays.
@@ -1447,44 +1451,6 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
     enddo ; enddo
   endif
 
-  ! Compute the instantaneous M2 and K1 velocities
-  ! Note here the filtering is applied to the velocity fields at the previous time step.
-  if (CS%use_filter_m2) then
-    call Filt_accum(ubt, um2, CS%Time, US, CS%Filt_CS_um2)
-    call Filt_accum(vbt, vm2, CS%Time, US, CS%Filt_CS_vm2)
-  endif
-  if (CS%use_filter_k1) then
-    call Filt_accum(ubt, uk1, CS%Time, US, CS%Filt_CS_uk1)
-    call Filt_accum(vbt, vk1, CS%Time, US, CS%Filt_CS_vk1)
-  endif
-
-  ! Apply frequency-dependent linear wave drag
-  if (CS%linear_freq_drag) then
-    Drag_u(:,:) = 0.0 ; Drag_v(:,:) = 0.0
-    !$OMP do
-    do j=js,je ; do I=is-1,ie
-      if (CS%lin_drag_um2(I,j) > 0.0 .or. CS%lin_drag_uk1(I,j) > 0.0) then
-        Htot = 0.5 * (eta(i,j) + eta(i+1,j))
-        if (GV%Boussinesq) &
-          Htot = Htot + 0.5*GV%Z_to_H * (CS%bathyT(i,j) + CS%bathyT(i+1,j))
-        Drag_u(I,j) = (um2(I,j) * CS%lin_drag_um2(I,j) + &
-                       uk1(I,j) * CS%lin_drag_uk1(I,j)) / Htot
-        BT_force_u(I,j) = BT_force_u(I,j) - Drag_u(I,j)
-      endif
-    enddo ; enddo
-    !$OMP do
-    do J=js-1,je ; do i=is,ie
-      if (CS%lin_drag_vm2(i,J) > 0.0 .or. CS%lin_drag_vk1(i,J) > 0.0) then
-        Htot = 0.5 * (eta(i,j) + eta(i,j+1))
-        if (GV%Boussinesq) &
-          Htot = Htot + 0.5*GV%Z_to_H * (CS%bathyT(i,j) + CS%bathyT(i,j+1))
-        Drag_v(i,J) = (vm2(i,J) * CS%lin_drag_vm2(i,J) + &
-                       vk1(i,J) * CS%lin_drag_vk1(i,J)) / Htot
-        BT_force_v(i,J) = BT_force_v(i,J) - Drag_v(i,J)
-      endif
-    enddo ; enddo
-  endif
-
   if ((Isq > is-1) .or. (Jsq > js-1)) then
     ! Non-symmetric memory is being used, so the edge values need to be
     ! filled in with a halo update of a non-symmetric array.
@@ -2070,6 +2036,23 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       endif
     endif
 
+    ! Compute the instantaneous M2 and K1 velocities
+    ! Note here the filtering is applied to the velocity fields at the previous time step.
+    if (CS%use_filter_m2) then ; if (find_etaav) then
+      call Filt_accum(ubt, um2, CS%Time, US, CS%Filt_CS_um2c)
+      call Filt_accum(vbt, vm2, CS%Time, US, CS%Filt_CS_vm2c)
+    else
+      call Filt_accum(ubt, um2, CS%Time, US, CS%Filt_CS_um2p)
+      call Filt_accum(vbt, vm2, CS%Time, US, CS%Filt_CS_vm2p)
+    endif ; endif
+    if (CS%use_filter_k1) then ; if (find_etaav) then
+      call Filt_accum(ubt, uk1, CS%Time, US, CS%Filt_CS_uk1c)
+      call Filt_accum(vbt, vk1, CS%Time, US, CS%Filt_CS_vk1c)
+    else
+      call Filt_accum(ubt, uk1, CS%Time, US, CS%Filt_CS_uk1p)
+      call Filt_accum(vbt, vk1, CS%Time, US, CS%Filt_CS_vk1p)
+    endif ; endif
+
     if (MOD(n+G%first_direction,2)==1) then
       ! On odd-steps, update v first.
       !$OMP do schedule(static)
@@ -2097,14 +2080,35 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
         !$OMP end do nowait
       endif
 
-      !$OMP do schedule(static)
-      do J=jsv-1,jev ; do i=isv-1,iev+1
-        vel_prev = vbt(i,J)
-        vbt(i,J) = bt_rem_v(i,J) * (vbt(i,J) + &
-             dtbt * ((BT_force_v(i,J) + Cor_v(i,J)) + PFv(i,J)))
-        if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
-        vbt_trans(i,J) = trans_wt1*vbt(i,J) + trans_wt2*vel_prev
-      enddo ; enddo
+      if (CS%linear_freq_drag) then
+        !$OMP do schedule(static)
+        do J=jsv-1,jev ; do i=isv-1,iev+1
+          if (CS%lin_drag_vm2(i,J) > 0.0 .or. CS%lin_drag_vk1(i,J) > 0.0) then
+            Htot = 0.5 * (eta(i,j) + eta(i,j+1))
+            if (GV%Boussinesq) &
+              Htot = Htot + 0.5*GV%Z_to_H * (CS%bathyT(i,j) + CS%bathyT(i,j+1))
+            Drag_v(i,J) = (vm2(i,J) * CS%lin_drag_vm2(i,J) + &
+                           vk1(i,J) * CS%lin_drag_vk1(i,J)) / Htot
+          else
+            Drag_v(i,J) = 0.0
+          endif
+
+          vel_prev = vbt(i,J)
+          vbt(i,J) = bt_rem_v(i,J) * (vbt(i,J) + &
+               dtbt * (((BT_force_v(i,J) + Cor_v(i,J)) + PFv(i,J)) - Drag_v(i,J)))
+          if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
+          vbt_trans(i,J) = trans_wt1*vbt(i,J) + trans_wt2*vel_prev
+        enddo ; enddo
+      else
+        !$OMP do schedule(static)
+        do J=jsv-1,jev ; do i=isv-1,iev+1
+          vel_prev = vbt(i,J)
+          vbt(i,J) = bt_rem_v(i,J) * (vbt(i,J) + &
+               dtbt * ((BT_force_v(i,J) + Cor_v(i,J)) + PFv(i,J)))
+          if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
+          vbt_trans(i,J) = trans_wt1*vbt(i,J) + trans_wt2*vel_prev
+        enddo ; enddo
+      endif
 
       if (CS%linear_wave_drag .and. CS%linear_freq_drag) then
         !$OMP do schedule(static)
@@ -2186,15 +2190,37 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
         !$OMP end do nowait
       endif
 
-      !$OMP do schedule(static)
-      do j=jsv,jev ; do I=isv-1,iev
-        vel_prev = ubt(I,j)
-        ubt(I,j) = bt_rem_u(I,j) * (ubt(I,j) + &
-             dtbt * ((BT_force_u(I,j) + Cor_u(I,j)) + PFu(I,j)))
-        if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
-        ubt_trans(I,j) = trans_wt1*ubt(I,j) + trans_wt2*vel_prev
-      enddo ; enddo
-      !$OMP end do nowait
+      if (CS%linear_freq_drag) then
+        !$OMP do schedule(static)
+        do j=jsv,jev ; do I=isv-1,iev
+          if (CS%lin_drag_um2(I,j) > 0.0 .or. CS%lin_drag_uk1(I,j) > 0.0) then
+            Htot = 0.5 * (eta(i,j) + eta(i+1,j))
+            if (GV%Boussinesq) &
+              Htot = Htot + 0.5*GV%Z_to_H * (CS%bathyT(i,j) + CS%bathyT(i+1,j))
+            Drag_u(I,j) = (um2(I,j) * CS%lin_drag_um2(I,j) + &
+                           uk1(I,j) * CS%lin_drag_uk1(I,j)) / Htot
+          else
+            Drag_u(I,j) = 0.0
+          endif
+
+          vel_prev = ubt(I,j)
+          ubt(I,j) = bt_rem_u(I,j) * (ubt(I,j) + &
+               dtbt * (((BT_force_u(I,j) + Cor_u(I,j)) + PFu(I,j)) - Drag_u(I,j)))
+          if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
+          ubt_trans(I,j) = trans_wt1*ubt(I,j) + trans_wt2*vel_prev
+        enddo ; enddo
+        !$OMP end do nowait
+      else
+        !$OMP do schedule(static)
+        do j=jsv,jev ; do I=isv-1,iev
+          vel_prev = ubt(I,j)
+          ubt(I,j) = bt_rem_u(I,j) * (ubt(I,j) + &
+               dtbt * ((BT_force_u(I,j) + Cor_u(I,j)) + PFu(I,j)))
+          if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
+          ubt_trans(I,j) = trans_wt1*ubt(I,j) + trans_wt2*vel_prev
+        enddo ; enddo
+        !$OMP end do nowait
+      endif
 
       if (CS%linear_wave_drag .and. CS%linear_freq_drag) then
         !$OMP do schedule(static)
@@ -2278,14 +2304,35 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
         endif ; enddo ; enddo
       endif
 
-      !$OMP do schedule(static)
-      do j=jsv-1,jev+1 ; do I=isv-1,iev
-        vel_prev = ubt(I,j)
-        ubt(I,j) = bt_rem_u(I,j) * (ubt(I,j) + &
-             dtbt * ((BT_force_u(I,j) + Cor_u(I,j)) + PFu(I,j)))
-        if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
-        ubt_trans(I,j) = trans_wt1*ubt(I,j) + trans_wt2*vel_prev
-      enddo ; enddo
+      if (CS%linear_freq_drag) then
+        !$OMP do schedule(static)
+        do j=jsv-1,jev+1 ; do I=isv-1,iev
+          if (CS%lin_drag_um2(I,j) > 0.0 .or. CS%lin_drag_uk1(I,j) > 0.0) then
+            Htot = 0.5 * (eta(i,j) + eta(i+1,j))
+            if (GV%Boussinesq) &
+              Htot = Htot + 0.5*GV%Z_to_H * (CS%bathyT(i,j) + CS%bathyT(i+1,j))
+            Drag_u(I,j) = (um2(I,j) * CS%lin_drag_um2(I,j) + &
+                           uk1(I,j) * CS%lin_drag_uk1(I,j)) / Htot
+          else
+            Drag_u(I,j) = 0.0
+          endif
+
+          vel_prev = ubt(I,j)
+          ubt(I,j) = bt_rem_u(I,j) * (ubt(I,j) + &
+               dtbt * (((BT_force_u(I,j) + Cor_u(I,j)) + PFu(I,j)) - Drag_u(I,j)))
+          if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
+          ubt_trans(I,j) = trans_wt1*ubt(I,j) + trans_wt2*vel_prev
+        enddo ; enddo
+      else
+        !$OMP do schedule(static)
+        do j=jsv-1,jev+1 ; do I=isv-1,iev
+          vel_prev = ubt(I,j)
+          ubt(I,j) = bt_rem_u(I,j) * (ubt(I,j) + &
+               dtbt * ((BT_force_u(I,j) + Cor_u(I,j)) + PFu(I,j)))
+          if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
+          ubt_trans(I,j) = trans_wt1*ubt(I,j) + trans_wt2*vel_prev
+        enddo ; enddo
+      endif
 
       if (CS%linear_wave_drag .and. CS%linear_freq_drag) then
         !$OMP do schedule(static)
@@ -2378,15 +2425,37 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
         endif ; enddo ; enddo
       endif
 
-      !$OMP do schedule(static)
-      do J=jsv-1,jev ; do i=isv,iev
-        vel_prev = vbt(i,J)
-        vbt(i,J) = bt_rem_v(i,J) * (vbt(i,J) + &
-             dtbt * ((BT_force_v(i,J) + Cor_v(i,J)) + PFv(i,J)))
-        if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
-        vbt_trans(i,J) = trans_wt1*vbt(i,J) + trans_wt2*vel_prev
-      enddo ; enddo
-      !$OMP end do nowait
+      if (CS%linear_freq_drag) then
+        !$OMP do schedule(static)
+        do J=jsv-1,jev ; do i=isv,iev
+          if (CS%lin_drag_vm2(i,J) > 0.0 .or. CS%lin_drag_vk1(i,J) > 0.0) then
+            Htot = 0.5 * (eta(i,j) + eta(i,j+1))
+            if (GV%Boussinesq) &
+              Htot = Htot + 0.5*GV%Z_to_H * (CS%bathyT(i,j) + CS%bathyT(i,j+1))
+            Drag_v(i,J) = (vm2(i,J) * CS%lin_drag_vm2(i,J) + &
+                           vk1(i,J) * CS%lin_drag_vk1(i,J)) / Htot
+          else
+            Drag_v(i,J) = 0.0
+          endif
+
+          vel_prev = vbt(i,J)
+          vbt(i,J) = bt_rem_v(i,J) * (vbt(i,J) + &
+               dtbt * (((BT_force_v(i,J) + Cor_v(i,J)) + PFv(i,J)) - Drag_v(i,J)))
+          if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
+          vbt_trans(i,J) = trans_wt1*vbt(i,J) + trans_wt2*vel_prev
+        enddo ; enddo
+        !$OMP end do nowait
+      else
+        !$OMP do schedule(static)
+        do J=jsv-1,jev ; do i=isv,iev
+          vel_prev = vbt(i,J)
+          vbt(i,J) = bt_rem_v(i,J) * (vbt(i,J) + &
+               dtbt * ((BT_force_v(i,J) + Cor_v(i,J)) + PFv(i,J)))
+          if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
+          vbt_trans(i,J) = trans_wt1*vbt(i,J) + trans_wt2*vel_prev
+        enddo ; enddo
+        !$OMP end do nowait
+      endif
 
       if (CS%linear_wave_drag .and. CS%linear_freq_drag) then
         !$OMP do schedule(static)
@@ -5566,16 +5635,20 @@ subroutine register_barotropic_restarts(HI, GV, US, param_file, CS, restart_CS)
   ! Initialize and register streaming filters
   if (CS%use_filter_m2) then
     if (am2 > 0.0 .and. om2 > 0.0) then
-      call Filt_register(am2, om2, 'u', HI, CS%Filt_CS_um2)
-      call Filt_register(am2, om2, 'v', HI, CS%Filt_CS_vm2)
+      call Filt_register(am2, om2, 'u', HI, CS%Filt_CS_um2p)
+      call Filt_register(am2, om2, 'v', HI, CS%Filt_CS_vm2p)
+      call Filt_register(am2, om2, 'u', HI, CS%Filt_CS_um2c)
+      call Filt_register(am2, om2, 'v', HI, CS%Filt_CS_vm2c)
     else
       CS%use_filter_m2 = .false.
     endif
   endif
   if (CS%use_filter_k1) then
     if (ak1 > 0.0 .and. ok1 > 0.0) then
-      call Filt_register(ak1, ok1, 'u', HI, CS%Filt_CS_uk1)
-      call Filt_register(ak1, ok1, 'v', HI, CS%Filt_CS_vk1)
+      call Filt_register(ak1, ok1, 'u', HI, CS%Filt_CS_uk1p)
+      call Filt_register(ak1, ok1, 'v', HI, CS%Filt_CS_vk1p)
+      call Filt_register(ak1, ok1, 'u', HI, CS%Filt_CS_uk1c)
+      call Filt_register(ak1, ok1, 'v', HI, CS%Filt_CS_vk1c)
     else
       CS%use_filter_k1 = .false.
     endif
