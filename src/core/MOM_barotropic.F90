@@ -120,6 +120,9 @@ type, public :: barotropic_CS ; private
   real ALLOCABLE_, dimension(NIMEMB_PTR_,NJMEM_) :: lin_drag_uk1
           !< A spatially varying linear drag coefficient acting on the zonal barotropic flow
           !! at the K1 frequency [H T-1 ~> m s-1 or kg m-2 s-1].
+  real ALLOCABLE_, dimension(NIMEMB_PTR_,NJMEM_) :: lin_drag_uo1
+          !< A spatially varying linear drag coefficient acting on the zonal barotropic flow
+          !! at the O1 frequency [H T-1 ~> m s-1 or kg m-2 s-1].
   real ALLOCABLE_, dimension(NIMEMB_PTR_,NJMEM_) :: ubt_IC
           !< The barotropic solvers estimate of the zonal velocity that will be the initial
           !! condition for the next call to btstep [L T-1 ~> m s-1].
@@ -136,6 +139,9 @@ type, public :: barotropic_CS ; private
   real ALLOCABLE_, dimension(NIMEM_,NJMEMB_PTR_) :: lin_drag_vk1
           !< A spatially varying linear drag coefficient acting on the zonal barotropic flow
           !! at the K1 frequency [H T-1 ~> m s-1 or kg m-2 s-1].
+  real ALLOCABLE_, dimension(NIMEM_,NJMEMB_PTR_) :: lin_drag_vo1
+          !< A spatially varying linear drag coefficient acting on the zonal barotropic flow
+          !! at the O1 frequency [H T-1 ~> m s-1 or kg m-2 s-1].
   real ALLOCABLE_, dimension(NIMEM_,NJMEMB_PTR_) :: vbt_IC
           !< The barotropic solvers estimate of the zonal velocity that will be the initial
           !! condition for the next call to btstep [L T-1 ~> m s-1].
@@ -270,6 +276,8 @@ type, public :: barotropic_CS ; private
                              !! instantaneous tidal signals.
   logical :: use_filter_k1   !< If true, apply streaming band-pass filter for detecting
                              !! instantaneous tidal signals.
+  logical :: use_filter_o1   !< If true, apply streaming band-pass filter for detecting
+                             !! instantaneous tidal signals.
   logical :: use_wide_halos  !< If true, use wide halos and march in during the
                              !! barotropic time stepping for efficiency.
   logical :: clip_velocity   !< If true, limit any velocity components that are
@@ -316,7 +324,9 @@ type, public :: barotropic_CS ; private
   type(Filter_CS) :: Filt_CS_um2, & !< Control structures for the M2 streaming filter
                      Filt_CS_vm2, & !< Control structures for the M2 streaming filter
                      Filt_CS_uk1, & !< Control structures for the K1 streaming filter
-                     Filt_CS_vk1    !< Control structures for the K1 streaming filter
+                     Filt_CS_vk1, & !< Control structures for the K1 streaming filter
+                     Filt_CS_uo1, & !< Control structures for the K1 streaming filter
+                     Filt_CS_vo1    !< Control structures for the K1 streaming filter
   logical :: module_is_initialized = .false.  !< If true, module has been initialized
 
   integer :: isdw !< The lower i-memory limit for the wide halo arrays.
@@ -624,7 +634,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
     DCor_v, &     ! An averaged total thickness at v points [H ~> m or kg m-2].
     Datv          ! Basin depth at v-velocity grid points times the x-grid
                   ! spacing [H L ~> m2 or kg m-1].
-  real, dimension(:,:), pointer :: um2, uk1, vm2, vk1
+  real, dimension(:,:), pointer :: um2, uk1, uo1, vm2, vk1, vo1
                   ! M2 and K1 velocities from the output of streaming filters [m s-1]
   real, dimension(SZIBW_(CS),SZJW_(CS)), target :: zero_u
                   ! Zero array on u grid [nondim]
@@ -1466,29 +1476,39 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   else
     uk1 => zero_u ; vk1 => zero_v
   endif
+  if (CS%use_filter_o1) then
+    call Filt_accum(ubt, uo1, CS%Time, US, CS%Filt_CS_uo1)
+    call Filt_accum(vbt, vo1, CS%Time, US, CS%Filt_CS_vo1)
+  else
+    uo1 => zero_u ; vo1 => zero_v
+  endif
 
   ! Apply frequency-dependent linear wave drag
   if (CS%linear_freq_drag) then
     Drag_u(:,:) = 0.0 ; Drag_v(:,:) = 0.0
     !$OMP do
     do j=js,je ; do I=is-1,ie
-      if (CS%lin_drag_um2(I,j) > 0.0 .or. CS%lin_drag_uk1(I,j) > 0.0) then
+      if (CS%lin_drag_um2(I,j) > 0.0 .or. CS%lin_drag_uk1(I,j) > 0.0 &
+                                     .or. CS%lin_drag_uo1(I,j) > 0.0) then
         Htot = 0.5 * (eta(i,j) + eta(i+1,j))
         if (GV%Boussinesq) &
           Htot = Htot + 0.5*GV%Z_to_H * (CS%bathyT(i,j) + CS%bathyT(i+1,j))
         Drag_u(I,j) = (um2(I,j) * CS%lin_drag_um2(I,j) + &
-                       uk1(I,j) * CS%lin_drag_uk1(I,j)) / Htot
+                       uk1(I,j) * CS%lin_drag_uk1(I,j) + &
+                       uo1(I,j) * CS%lin_drag_uo1(I,j)) / Htot
         BT_force_u(I,j) = BT_force_u(I,j) - Drag_u(I,j)
       endif
     enddo ; enddo
     !$OMP do
     do J=js-1,je ; do i=is,ie
-      if (CS%lin_drag_vm2(i,J) > 0.0 .or. CS%lin_drag_vk1(i,J) > 0.0) then
+      if (CS%lin_drag_vm2(i,J) > 0.0 .or. CS%lin_drag_vk1(i,J) > 0.0 &
+                                     .or. CS%lin_drag_vo1(I,j) > 0.0) then
         Htot = 0.5 * (eta(i,j) + eta(i,j+1))
         if (GV%Boussinesq) &
           Htot = Htot + 0.5*GV%Z_to_H * (CS%bathyT(i,j) + CS%bathyT(i,j+1))
         Drag_v(i,J) = (vm2(i,J) * CS%lin_drag_vm2(i,J) + &
-                       vk1(i,J) * CS%lin_drag_vk1(i,J)) / Htot
+                       vk1(i,J) * CS%lin_drag_vk1(i,J) + &
+                       vo1(I,j) * CS%lin_drag_vo1(I,j)) / Htot
         BT_force_v(i,J) = BT_force_v(i,J) - Drag_v(i,J)
       endif
     enddo ; enddo
@@ -4589,6 +4609,8 @@ subroutine barotropic_init(u, v, h, eta, Time, G, GV, US, param_file, diag, CS, 
                         ! piston velocities for the M2 frequency [nondim].
   real :: k1_drag_scale ! A scaling factor for the barotropic linear wave drag
                         ! piston velocities for the K1 frequency [nondim].
+  real :: o1_drag_scale ! A scaling factor for the barotropic linear wave drag
+                        ! piston velocities for the O1 frequency [nondim].
   character(len=200) :: inputdir       ! The directory in which to find input files.
   character(len=200) :: wave_drag_file ! The file from which to read the wave
                                        ! drag piston velocity.
@@ -4610,6 +4632,12 @@ subroutine barotropic_init(u, v, h, eta, Time, G, GV, US, param_file, diag, CS, 
                                        ! name for the K1 frequency in wave_drag_file.
   character(len=80)  :: k1_drag_v      ! The wave drag piston velocity variable
                                        ! name for the K1 frequency in wave_drag_file.
+  character(len=80)  :: o1_drag_var    ! The wave drag piston velocity variable
+                                       ! name for the O1 frequency in wave_drag_file.
+  character(len=80)  :: o1_drag_u      ! The wave drag piston velocity variable
+                                       ! name for the O1 frequency in wave_drag_file.
+  character(len=80)  :: o1_drag_v      ! The wave drag piston velocity variable
+                                       ! name for the O1 frequency in wave_drag_file.
   real :: mean_SL     ! The mean sea level that is used along with the bathymetry to estimate the
                       ! geometry when LINEARIZED_BT_CORIOLIS is true or BT_NONLIN_STRESS is false [Z ~> m].
   real :: Z_to_H      ! A local unit conversion factor [H Z-1 ~> nondim or kg m-3]
@@ -4853,7 +4881,8 @@ subroutine barotropic_init(u, v, h, eta, Time, G, GV, US, param_file, diag, CS, 
                  "the ocean.  This was introduced to facilitate tide modeling. "//&
                  "At least one streaming band-pass filter must be turned on.", &
                  default=.false.)
-  if (.not.CS%use_filter_m2 .and. .not.CS%use_filter_k1) CS%linear_freq_drag = .false.
+  if (.not.CS%use_filter_m2 .and. .not.CS%use_filter_k1 .and. .not.CS%use_filter_o1) &
+                 CS%linear_freq_drag = .false.
 
   call get_param(param_file, mdl, "BT_WAVE_DRAG_FILE", wave_drag_file, &
                  "The name of the file with the barotropic linear wave drag "//&
@@ -4909,6 +4938,23 @@ subroutine barotropic_init(u, v, h, eta, Time, G, GV, US, param_file, diag, CS, 
   call get_param(param_file, mdl, "BT_K1_DRAG_SCALE", k1_drag_scale, &
                  "A scaling factor for the barotropic linear wave drag "//&
                  "piston velocities for the K1 frequency.", default=1.0, units="nondim", &
+                 do_not_log=.not.CS%linear_freq_drag)
+
+  call get_param(param_file, mdl, "BT_O1_DRAG_VAR", o1_drag_var, &
+                 "The name of the variable in BT_WAVE_DRAG_FILE with the "//&
+                 "barotropic linear wave drag piston velocities for the O1 frequency.", &
+                 default="", do_not_log=.not.CS%linear_freq_drag)
+  call get_param(param_file, mdl, "BT_O1_DRAG_U", o1_drag_u, &
+                 "The name of the variable in BT_WAVE_DRAG_FILE with the "//&
+                 "barotropic linear wave drag piston velocities for the O1 frequency at u points.", &
+                 default="", do_not_log=.not.CS%linear_freq_drag)
+  call get_param(param_file, mdl, "BT_O1_DRAG_V", o1_drag_v, &
+                 "The name of the variable in BT_WAVE_DRAG_FILE with the "//&
+                 "barotropic linear wave drag piston velocities for the O1 frequency at v points.", &
+                 default="", do_not_log=.not.CS%linear_freq_drag)
+  call get_param(param_file, mdl, "BT_O1_DRAG_SCALE", o1_drag_scale, &
+                 "A scaling factor for the barotropic linear wave drag "//&
+                 "piston velocities for the O1 frequency.", default=1.0, units="nondim", &
                  do_not_log=.not.CS%linear_freq_drag)
 
   call get_param(param_file, mdl, "CLIP_BT_VELOCITY", CS%clip_velocity, &
@@ -5156,6 +5202,8 @@ subroutine barotropic_init(u, v, h, eta, Time, G, GV, US, param_file, diag, CS, 
     ALLOC_(CS%lin_drag_vm2(isd:ied,JsdB:JedB)) ; CS%lin_drag_vm2(:,:) = 0.0
     ALLOC_(CS%lin_drag_uk1(IsdB:IedB,jsd:jed)) ; CS%lin_drag_uk1(:,:) = 0.0
     ALLOC_(CS%lin_drag_vk1(isd:ied,JsdB:JedB)) ; CS%lin_drag_vk1(:,:) = 0.0
+    ALLOC_(CS%lin_drag_uo1(IsdB:IedB,jsd:jed)) ; CS%lin_drag_uo1(:,:) = 0.0
+    ALLOC_(CS%lin_drag_vo1(isd:ied,JsdB:JedB)) ; CS%lin_drag_vo1(:,:) = 0.0
 
     if (len_trim(wave_drag_file) > 0) then
       if (.not. CS%linear_wave_drag) then
@@ -5215,6 +5263,32 @@ subroutine barotropic_init(u, v, h, eta, Time, G, GV, US, param_file, diag, CS, 
           deallocate(lin_drag_h)
         endif ! (len_trim(k1_drag_u) > 0 .and. len_trim(k1_drag_v) > 0)
       endif ! (CS%use_filter_k1 .and. k1_drag_scale > 0.0)
+
+      if (CS%use_filter_o1 .and. o1_drag_scale > 0.0) then
+        if (len_trim(o1_drag_u) > 0 .and. len_trim(o1_drag_v) > 0) then
+          call MOM_read_data(wave_drag_file, o1_drag_u, CS%lin_drag_uo1, G%Domain, &
+                             position=EAST_FACE, scale=o1_drag_scale*GV%m_to_H*US%T_to_s)
+          call pass_var(CS%lin_drag_uo1, G%Domain)
+
+          call MOM_read_data(wave_drag_file, o1_drag_v, CS%lin_drag_vo1, G%Domain, &
+                             position=NORTH_FACE, scale=o1_drag_scale*GV%m_to_H*US%T_to_s)
+          call pass_var(CS%lin_drag_vo1, G%Domain)
+
+        elseif (len_trim(o1_drag_var) > 0) then
+          allocate(lin_drag_h(isd:ied,jsd:jed), source=0.0)
+
+          call MOM_read_data(wave_drag_file, o1_drag_var, lin_drag_h, G%Domain, &
+                             scale=o1_drag_scale*GV%m_to_H*US%T_to_s)
+          call pass_var(lin_drag_h, G%Domain)
+          do j=js,je ; do I=is-1,ie
+            CS%lin_drag_uo1(I,j) = 0.5 * (lin_drag_h(i,j) + lin_drag_h(i+1,j))
+          enddo ; enddo
+          do J=js-1,je ; do i=is,ie
+            CS%lin_drag_vo1(i,J) = 0.5 * (lin_drag_h(i,j) + lin_drag_h(i,j+1))
+          enddo ; enddo
+          deallocate(lin_drag_h)
+        endif ! (len_trim(o1_drag_u) > 0 .and. len_trim(o1_drag_v) > 0)
+      endif ! (CS%use_filter_o1 .and. o1_drag_scale > 0.0)
     endif ! (len_trim(wave_drag_file) > 0)
   endif ! (CS%linear_freq_drag)
 
@@ -5503,8 +5577,8 @@ subroutine register_barotropic_restarts(HI, GV, US, param_file, CS, restart_CS)
   type(vardesc) :: vd(3)
   character(len=40)  :: mdl = "MOM_barotropic"  ! This module's name.
   integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB
-  real :: am2, ak1      !< Bandwidth parameters of the M2 and K1 streaming filters [nondim]
-  real :: om2, ok1      !< Target frequencies of the M2 and K1 streaming filters [T-1 ~> s-1]
+  real :: am2, ak1, ao1 !< Bandwidth parameters of the M2 and K1 streaming filters [nondim]
+  real :: om2, ok1, oo1 !< Target frequencies of the M2 and K1 streaming filters [T-1 ~> s-1]
 
   isd = HI%isd ; ied = HI%ied ; jsd = HI%jsd ; jed = HI%jed
   IsdB = HI%IsdB ; IedB = HI%IedB ; JsdB = HI%JsdB ; JedB = HI%JedB
@@ -5523,6 +5597,9 @@ subroutine register_barotropic_restarts(HI, GV, US, param_file, CS, restart_CS)
   call get_param(param_file, mdl, "STREAMING_FILTER_K1", CS%use_filter_k1, &
                  "If true, turn on streaming band-pass filter for detecting "//&
                  "instantaneous tidal signals.", default=.false.)
+  call get_param(param_file, mdl, "STREAMING_FILTER_O1", CS%use_filter_o1, &
+                 "If true, turn on streaming band-pass filter for detecting "//&
+                 "instantaneous tidal signals.", default=.false.)
   call get_param(param_file, mdl, "FILTER_ALPHA_M2", am2, &
                  "Bandwidth parameter of the streaming filter targeting the M2 frequency. "//&
                  "Must be positive. To turn off filtering, set FILTER_ALPHA_M2 <= 0.0.", &
@@ -5530,6 +5607,10 @@ subroutine register_barotropic_restarts(HI, GV, US, param_file, CS, restart_CS)
   call get_param(param_file, mdl, "FILTER_ALPHA_K1", ak1, &
                  "Bandwidth parameter of the streaming filter targeting the K1 frequency. "//&
                  "Must be positive. To turn off filtering, set FILTER_ALPHA_K1 <= 0.0.", &
+                 default=0.0, units="nondim", do_not_log=.not.CS%use_filter_k1)
+  call get_param(param_file, mdl, "FILTER_ALPHA_O1", ao1, &
+                 "Bandwidth parameter of the streaming filter targeting the O1 frequency. "//&
+                 "Must be positive. To turn off filtering, set FILTER_ALPHA_O1 <= 0.0.", &
                  default=0.0, units="nondim", do_not_log=.not.CS%use_filter_k1)
   call get_param(param_file, mdl, "TIDE_M2_FREQ", om2, &
                  "Frequency of the M2 tidal constituent. "//&
@@ -5541,6 +5622,12 @@ subroutine register_barotropic_restarts(HI, GV, US, param_file, CS, restart_CS)
                  "Frequency of the K1 tidal constituent. "//&
                  "This is only used if TIDES and TIDE_K1"// &
                  " are true, or if OBC_TIDE_N_CONSTITUENTS > 0 and K1"// &
+                 " is in OBC_TIDE_CONSTITUENTS.", units="s-1", default=tidal_frequency("K1"), &
+                 scale=US%T_to_s, do_not_log=.true.)
+  call get_param(param_file, mdl, "TIDE_O1_FREQ", oo1, &
+                 "Frequency of the K1 tidal constituent. "//&
+                 "This is only used if TIDES and TIDE_O1"// &
+                 " are true, or if OBC_TIDE_N_CONSTITUENTS > 0 and O1"// &
                  " is in OBC_TIDE_CONSTITUENTS.", units="s-1", default=tidal_frequency("K1"), &
                  scale=US%T_to_s, do_not_log=.true.)
 
@@ -5587,6 +5674,14 @@ subroutine register_barotropic_restarts(HI, GV, US, param_file, CS, restart_CS)
       call Filt_register(ak1, ok1, 'v', HI, CS%Filt_CS_vk1)
     else
       CS%use_filter_k1 = .false.
+    endif
+  endif
+  if (CS%use_filter_o1) then
+    if (ao1 > 0.0 .and. oo1 > 0.0) then
+      call Filt_register(ao1, oo1, 'u', HI, CS%Filt_CS_uo1)
+      call Filt_register(ao1, oo1, 'v', HI, CS%Filt_CS_vo1)
+    else
+      CS%use_filter_o1 = .false.
     endif
   endif
 
