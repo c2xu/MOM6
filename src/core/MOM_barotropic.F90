@@ -626,6 +626,10 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
                   ! spacing [H L ~> m2 or kg m-1].
   real, dimension(:,:), pointer :: um2, uk1, vm2, vk1
                   ! M2 and K1 velocities from the output of streaming filters [m s-1]
+  real, dimension(SZIBW_(CS),SZJW_(CS)), target :: zero_u
+                  ! Zero array on u grid [nondim]
+  real, dimension(SZIW_(CS),SZJBW_(CS)), target :: zero_v
+                  ! Zero array on v grid [nondim]
   real, dimension(SZIBW_(CS),SZJW_(CS)) :: Drag_u
                   ! The zonal acceleration due to frequency-dependent drag [m s-2]
   real, dimension(SZIW_(CS),SZJBW_(CS)) :: Drag_v
@@ -1449,13 +1453,18 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
 
   ! Compute the instantaneous M2 and K1 velocities
   ! Note here the filtering is applied to the velocity fields at the previous time step.
+  zero_u(:,:) = 0.0 ; zero_v(:,:) = 0.0
   if (CS%use_filter_m2) then
     call Filt_accum(ubt, um2, CS%Time, US, CS%Filt_CS_um2)
     call Filt_accum(vbt, vm2, CS%Time, US, CS%Filt_CS_vm2)
+  else
+    um2 => zero_u ; vm2 => zero_v
   endif
   if (CS%use_filter_k1) then
     call Filt_accum(ubt, uk1, CS%Time, US, CS%Filt_CS_uk1)
     call Filt_accum(vbt, vk1, CS%Time, US, CS%Filt_CS_vk1)
+  else
+    uk1 => zero_u ; vk1 => zero_v
   endif
 
   ! Apply frequency-dependent linear wave drag
