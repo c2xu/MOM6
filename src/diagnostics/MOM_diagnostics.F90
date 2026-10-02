@@ -27,7 +27,7 @@ use MOM_EOS,               only : prac_saln_to_abs_saln, abs_saln_to_prac_saln
 use MOM_error_handler,     only : MOM_error, FATAL, WARNING
 use MOM_file_parser,       only : get_param, log_version, param_file_type
 use MOM_grid,              only : ocean_grid_type
-use MOM_interface_heights, only : find_eta, find_bsl, find_dz_for_eta, find_col_mass
+use MOM_interface_heights, only : find_eta, find_baroclinic_sealev, find_dz_for_eta, find_col_mass
 use MOM_spatial_means,     only : global_area_mean, global_layer_mean
 use MOM_spatial_means,     only : global_volume_mean, global_area_integral
 use MOM_tracer_registry,   only : tracer_registry_type, post_tracer_transport_diagnostics
@@ -988,7 +988,7 @@ subroutine calculate_vertical_integrals(h, tv, p_surf, G, GV, US, CS)
   endif
 
   if (CS%id_bsl > 0) then
-    call find_bsl(h, tv, G, GV, US, CS%rho_bsl, bsl, dZref=G%Z_ref)
+    call find_baroclinic_sealev(h, tv, G, GV, US, CS%rho_bsl, bsl, dZref=G%Z_ref)
     call post_data(CS%id_bsl, bsl, CS%diag)
   endif
 
@@ -2309,7 +2309,7 @@ subroutine MOM_diagnostics_init(MIS, ADp, CDp, Time, G, GV, US, param_file, diag
   call get_param(param_file, "MOM", "RHO_BSL", CS%rho_bsl, &
                  "Reference density for calculating the baroclinic sea level based on "//&
                  "integrals of the differences between the actual layer density and this "//&
-                 "value. By defulat, it should be the surface density.", &
+                 "value. By default, it should be a typical surface density.", &
                  units='kg m-3', default=1025.0, scale=US%kg_m3_to_R, do_not_log=CS%id_bsl<=0)
 
   ! Register time derivatives and allocate memory for diagnostics that need
