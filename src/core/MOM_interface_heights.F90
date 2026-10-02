@@ -19,7 +19,7 @@ implicit none ; private
 
 #include <MOM_memory.h>
 
-public find_eta, find_bsl, find_dz_for_eta, dz_to_thickness, thickness_to_dz, dz_to_thickness_simple
+public find_eta, find_baroclinic_sealev, find_dz_for_eta, dz_to_thickness, thickness_to_dz, dz_to_thickness_simple
 public calc_derived_thermo
 public convert_MLD_to_ML_thickness
 public find_rho_bottom, find_col_avg_SpV, find_col_mass
@@ -292,16 +292,16 @@ end subroutine find_eta_2d
 
 !> Baroclinic sea level calculation, following Xu et al., submitted to JPO
 !! This subroutine calculates the baroclinic sea level if an equation of state is not used,
-!! and calls bsl_boussinesq or bsl_non_boussinesq otherwise.
+!! and calls baroclinic_sealev_Boussinesq or baroclinic_sealev_nonBous otherwise.
 !! Note: 1) The barotropic-baroclinic sea level decomposition is useful only in the deep ocean,
 !! where baroclinic waves are "large", yielding sea level fluctuations of a few centimeters.
 !! 2) The baroclinic sea level represents the temporal anomaly to a mean state around which the
 !! dynamics are linearzed. Thus, it must always be interpreted with its temporal average removed,
 !! and the "raw" baroclinic sea level calculated from this subroutine is not a useful quantity.
 !! 3) The baroclinic sea level calculated in this subroutine is based on the linear decomposition.
-!! It should thus not be used to interprete sea level fluctuations where nonlinearity dominates,
+!! It should thus not be used to interpret sea level fluctuations where nonlinearity dominates,
 !! such as in shallow waters or over steep bottom topography.
-subroutine find_bsl(h, tv, G, GV, US, rho_s, bsl, dZref)
+subroutine find_baroclinic_sealev(h, tv, G, GV, US, rho_s, bsl, dZref)
   type(ocean_grid_type),                      intent(in)  :: G   !< The ocean's grid structure
   type(verticalGrid_type),                    intent(in)  :: GV  !< The ocean's vertical grid structure
   type(unit_scale_type),                      intent(in)  :: US  !< A dimensional unit scaling type
@@ -331,9 +331,9 @@ subroutine find_bsl(h, tv, G, GV, US, rho_s, bsl, dZref)
 
   if (associated(tv%eqn_of_state)) then
     if (GV%Boussinesq) then
-      call bsl_boussinesq(h, tv, G, GV, US, rho_s, bsl, dZ_ref)
+      call baroclinic_sealev_Boussinesq(h, tv, G, GV, US, rho_s, bsl, dZ_ref)
     else ! (.not. GV%Boussinesq)
-      call bsl_non_boussinesq(h, tv, G, GV, US, rho_s, bsl, dZ_ref)
+      call baroclinic_sealev_nonBous(h, tv, G, GV, US, rho_s, bsl, dZ_ref)
     endif ! (GV%Boussinesq)
   else ! (.not. associated(tv%eqn_of_state))
     call find_eta(h, tv, G, GV, US, eta, halo_size=1, dZref=dZ_ref)
@@ -354,10 +354,10 @@ subroutine find_bsl(h, tv, G, GV, US, rho_s, bsl, dZref)
     !$OMP end parallel
   endif ! (associated(tv%eqn_of_state))
 
-end subroutine find_bsl
+end subroutine find_baroclinic_sealev
 
-!> BSL calculation when an EOS is used and the Boussinesq approximation is used
-subroutine bsl_boussinesq(h, tv, G, GV, US, rho_s, bsl, dZ_ref)
+!> Baroclinic sea level calculation when an EOS is used and the Boussinesq approximation is used
+subroutine baroclinic_sealev_Boussinesq(h, tv, G, GV, US, rho_s, bsl, dZ_ref)
   type(ocean_grid_type),                      intent(in)  :: G   !< The ocean's grid structure
   type(verticalGrid_type),                    intent(in)  :: GV  !< The ocean's vertical grid structure
   type(unit_scale_type),                      intent(in)  :: US  !< A dimensional unit scaling type
@@ -411,10 +411,10 @@ subroutine bsl_boussinesq(h, tv, G, GV, US, rho_s, bsl, dZ_ref)
   endif ; enddo ; enddo
   !$OMP end parallel
 
-end subroutine bsl_boussinesq
+end subroutine baroclinic_sealev_Boussinesq
 
-!> BSL calculation when an EOS is used and the Boussinesq approximation is not used
-subroutine bsl_non_boussinesq(h, tv, G, GV, US, rho_s, bsl, dZ_ref)
+!> Baroclinic sea level calculation when an EOS is used and the Boussinesq approximation is not used
+subroutine baroclinic_sealev_nonBous(h, tv, G, GV, US, rho_s, bsl, dZ_ref)
   type(ocean_grid_type),                      intent(in)  :: G   !< The ocean's grid structure
   type(verticalGrid_type),                    intent(in)  :: GV  !< The ocean's vertical grid structure
   type(unit_scale_type),                      intent(in)  :: US  !< A dimensional unit scaling type
@@ -476,7 +476,7 @@ subroutine bsl_non_boussinesq(h, tv, G, GV, US, rho_s, bsl, dZ_ref)
   endif ; enddo ; enddo
   !$OMP end parallel
 
-end subroutine bsl_non_boussinesq
+end subroutine baroclinic_sealev_nonBous
 
 !> Calculate derived thermodynamic quantities for re-use later.
 subroutine calc_derived_thermo(tv, h, G, GV, US, halo, debug)
